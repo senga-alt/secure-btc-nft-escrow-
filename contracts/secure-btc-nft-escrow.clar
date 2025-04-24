@@ -176,3 +176,84 @@
     (err ERR-INAVALID-ADDRESS)
   )
 )
+
+;; Complete an NFT transfer after receipt verification
+(define-public (complete-nft-transfer 
+  (nft-contract <nft-trait>)
+  (nft-id uint)
+)
+  (let 
+    ((escrow-details (unwrap! 
+      (map-get? escrow-transactions 
+        {
+          nft-contract: (contract-of nft-contract), 
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    ))
+    (nft-receipt (unwrap! 
+      (map-get? nft-receipts 
+        {
+          nft-contract: (contract-of nft-contract),
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    )))
+
+    ;; Verify NFT Contract
+    (asserts! (is-valid-nft-contract (contract-of nft-contract)) (err ERR-INAVALID-ADDRESS))
+
+    ;; Verify NFT Receipt
+    (asserts! 
+      (get received nft-receipt) 
+      (err ERR-NFT-NOT-RECEIVED)
+    )
+    
+    ;; Verify Escrow Status and Expiry
+    (asserts! 
+      (is-eq (get status escrow-details) "pending") 
+      (err ERR-INVALID-TRANSFER)
+    )
+    
+    (asserts! 
+      (<= block-height (get expiry-block escrow-details)) 
+      (err ERR-ESCROW-EXPIRED)
+    )
+    
+    (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
+
+    ;; Transfer NFT to Buyer
+    (try! 
+      (as-contract 
+        (contract-call? nft-contract transfer 
+          nft-id 
+          (as-contract tx-sender) 
+          (get buyer escrow-details)
+        )
+      )
+    )
+    
+    ;; Update Escrow Status
+    (map-set escrow-transactions 
+      {
+        nft-contract: (contract-of nft-contract), 
+        nft-id: nft-id
+      }
+      (merge escrow-details { status: "completed" })
+    )
+    
+    ;; Emit Completion Event
+    (print {
+      notification: "nft-transfer-completed",
+      payload: {
+        nft-contract: (contract-of nft-contract),
+        nft-id: nft-id,
+        buyer: (get buyer escrow-details)
+      }
+    })
+    
+    (ok true)
+  )
+)
