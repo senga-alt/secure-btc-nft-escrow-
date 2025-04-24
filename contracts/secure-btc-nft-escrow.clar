@@ -1,0 +1,357 @@
+;; Title: SecureBTC NFT Escrow Protocol
+;;
+;; Summary:
+;; A secure escrow system for NFT transactions on the Stacks Layer 2 blockchain with
+;; Bitcoin settlement guarantees. Facilitates trustless NFT transfers between buyers and sellers
+;; with built-in receipt verification and timeout protection.
+;;
+;; Description:
+;; This contract enables secure peer-to-peer NFT transactions by implementing a robust escrow 
+;; protocol that protects both buyers and sellers. NFTs are held in contract escrow during 
+;; the transaction process with configurable timeout periods and receipt confirmation.
+;; The protocol supports explicit transaction status tracking, receipt verification, and 
+;; automatic refund capabilities if transactions expire, all while maintaining full Bitcoin 
+;; security compliance.
+
+;; NFT Trait Definition
+(define-trait nft-trait
+  (
+    ;; Transfer an NFT from one principal to another
+    (transfer (uint principal principal) (response bool uint))
+  )
+)
+
+;; Error Codes
+(define-constant ERR-NOT-AUTHORIZED u100)
+(define-constant ERR-ESCROW-EXPIRED u101)
+(define-constant ERR-INVALID-TRANSFER u102)
+(define-constant ERR-NFT-NOT-RECEIVED u103)
+(define-constant ERR-INAVALID-ADDRESS u104)
+(define-constant ERR-INVALID-PRICE u105)
+
+;; Contract Constants
+(define-constant CONTRACT-OWNER tx-sender)
+(define-constant ESCROW-TIMEOUT u500)  ;; Approximate 3-day timeout in blocks
+
+;; NFT Receipt Tracking Mapping
+(define-map nft-receipts
+  {
+    nft-contract: principal,
+    nft-id: uint
+  }
+  {
+    received: bool,
+    received-at-block: uint
+  }
+)
+
+;; Escrow Transaction Mapping
+(define-map escrow-transactions
+  {
+    nft-contract: principal,
+    nft-id: uint
+  }
+  {
+    seller: principal,
+    buyer: principal,
+    price: uint,
+    status: (string-ascii 20),
+    expiry-block: uint
+  }
+)
+
+;; Core Functions
+
+;; Confirm receipt of an NFT in the escrow system
+(define-public (confirm-nft-receipt 
+  (nft-contract principal)
+  (nft-id uint)
+)
+  (begin
+    ;; Only seller can confirm receipt
+    (asserts! (is-eq tx-sender (get seller (unwrap! 
+      (map-get? escrow-transactions 
+        {
+          nft-contract: nft-contract, 
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    ))) (err ERR-NOT-AUTHORIZED))
+    (asserts! (is-valid-nft-contract nft-contract) (err ERR-INAVALID-ADDRESS))
+    (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
+
+    ;; Mark NFT as received
+    (map-set nft-receipts 
+      {
+        nft-contract: nft-contract,
+        nft-id: nft-id
+      }
+      {
+        received: true,
+        received-at-block: stacks-block-height
+      }
+    )
+
+    ;; Emit Receipt Confirmation Event
+    (print {
+      notification: "nft-receipt-confirmed",
+      payload: {
+        nft-contract: nft-contract,
+        nft-id: nft-id,
+        seller: tx-sender
+      }
+    })
+
+    (ok true)
+  )
+)
+
+;; Create a new NFT escrow transaction
+(define-public (create-nft-escrow 
+  (nft-contract <nft-trait>)
+  (nft-id uint)
+  (buyer principal)
+  (sale-price uint)
+)
+  (if (is-standard buyer)
+    (begin
+      ;; Validate buyer address
+      (asserts! (is-standard buyer) (err ERR-INAVALID-ADDRESS))
+      ;; Validate NFT Contract
+      (asserts! (is-valid-nft-contract (contract-of nft-contract)) (err ERR-INAVALID-ADDRESS))
+      ;; Validate sale price
+      (asserts! (> sale-price u0) (err ERR-INVALID-PRICE))
+      ;; Validate seller ownership and transfer capability
+      (asserts! 
+        (is-ok (contract-call? nft-contract transfer 
+          nft-id 
+          tx-sender 
+          (as-contract tx-sender)
+        )) 
+        (err ERR-INVALID-TRANSFER)
+      )
+      
+      ;; Initialize NFT Receipt Tracking
+      (map-set nft-receipts 
+        {
+          nft-contract: (contract-of nft-contract),
+          nft-id: nft-id
+        }
+        {
+          received: false,
+          received-at-block: u0
+        }
+      )
+      
+      ;; Store Escrow Details
+      (map-set escrow-transactions 
+        {
+          nft-contract: (contract-of nft-contract), 
+          nft-id: nft-id
+        }
+        {
+          seller: tx-sender,
+          buyer: buyer,
+          price: sale-price,
+          status: "pending",
+          expiry-block: (+ stacks-block-height ESCROW-TIMEOUT)
+        }
+      )
+      
+      ;; Emit Event for Chainhook
+      (print {
+        notification: "nft-escrow-created",
+        payload: {
+          nft-contract: (contract-of nft-contract),
+          nft-id: nft-id,
+          seller: tx-sender,
+          buyer: buyer,
+          price: sale-price
+        }
+      })
+      
+      (ok true)
+    )
+    (err ERR-INAVALID-ADDRESS)
+  )
+)
+
+;; Complete an NFT transfer after receipt verification
+(define-public (complete-nft-transfer 
+  (nft-contract <nft-trait>)
+  (nft-id uint)
+)
+  (let 
+    ((escrow-details (unwrap! 
+      (map-get? escrow-transactions 
+        {
+          nft-contract: (contract-of nft-contract), 
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    ))
+    (nft-receipt (unwrap! 
+      (map-get? nft-receipts 
+        {
+          nft-contract: (contract-of nft-contract),
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    )))
+
+    ;; Verify NFT Contract
+    (asserts! (is-valid-nft-contract (contract-of nft-contract)) (err ERR-INAVALID-ADDRESS))
+
+    ;; Verify NFT Receipt
+    (asserts! 
+      (get received nft-receipt) 
+      (err ERR-NFT-NOT-RECEIVED)
+    )
+    
+    ;; Verify Escrow Status and Expiry
+    (asserts! 
+      (is-eq (get status escrow-details) "pending") 
+      (err ERR-INVALID-TRANSFER)
+    )
+    
+    (asserts! 
+      (<= stacks-block-height (get expiry-block escrow-details)) 
+      (err ERR-ESCROW-EXPIRED)
+    )
+    
+    (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
+
+    ;; Transfer NFT to Buyer
+    (try! 
+      (as-contract 
+        (contract-call? nft-contract transfer 
+          nft-id 
+          (as-contract tx-sender) 
+          (get buyer escrow-details)
+        )
+      )
+    )
+    
+    ;; Update Escrow Status
+    (map-set escrow-transactions 
+      {
+        nft-contract: (contract-of nft-contract), 
+        nft-id: nft-id
+      }
+      (merge escrow-details { status: "completed" })
+    )
+    
+    ;; Emit Completion Event
+    (print {
+      notification: "nft-transfer-completed",
+      payload: {
+        nft-contract: (contract-of nft-contract),
+        nft-id: nft-id,
+        buyer: (get buyer escrow-details)
+      }
+    })
+    
+    (ok true)
+  )
+)
+
+;; Refund an NFT to seller if escrow has expired
+(define-public (refund-nft 
+  (nft-contract <nft-trait>)
+  (nft-id uint)
+)
+  (let 
+    ((escrow-details (unwrap! 
+      (map-get? escrow-transactions 
+        {
+          nft-contract: (contract-of nft-contract), 
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    )))
+    
+    ;; Verify NFT Contract
+    (asserts! (is-valid-nft-contract (contract-of nft-contract)) (err ERR-INAVALID-ADDRESS))
+
+    (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
+    
+    (asserts! 
+      (> stacks-block-height (get expiry-block escrow-details)) 
+      (err ERR-ESCROW-EXPIRED)
+    )
+    
+    ;; Transfer NFT Back to Seller
+    (try! 
+      (as-contract 
+        (contract-call? nft-contract transfer 
+          nft-id 
+          (as-contract tx-sender) 
+          (get seller escrow-details)
+        )
+      )
+    )
+    
+    ;; Update Escrow Status
+    (map-set escrow-transactions 
+      {
+        nft-contract: (contract-of nft-contract), 
+        nft-id: nft-id
+      }
+      (merge escrow-details { status: "refunded" })
+    )
+    
+    ;; Emit Refund Event
+    (print {
+      notification: "nft-escrow-refunded",
+      payload: {
+        nft-contract: (contract-of nft-contract),
+        nft-id: nft-id,
+        seller: (get seller escrow-details)
+      }
+    })
+    
+    (ok true)
+  )
+)
+
+;; Utility Functions
+
+;; Get the current status of an escrow transaction
+(define-read-only (get-escrow-status 
+  (nft-contract principal)
+  (nft-id uint)
+)
+  (map-get? escrow-transactions 
+    {
+      nft-contract: nft-contract, 
+      nft-id: nft-id
+    }
+  )
+)
+
+;; Get the receipt status of an NFT in escrow
+(define-read-only (get-nft-receipt-status 
+  (nft-contract principal)
+  (nft-id uint)
+)
+  (map-get? nft-receipts 
+    {
+      nft-contract: nft-contract,
+      nft-id: nft-id
+    }
+  )
+)
+
+;; Check if a principal is a valid NFT contract
+(define-read-only (is-valid-nft-contract (contract principal))
+  (match (principal-destruct? contract)
+    ok-result 
+      (is-some (get name ok-result))
+    err-result 
+      false
+  )
+)
