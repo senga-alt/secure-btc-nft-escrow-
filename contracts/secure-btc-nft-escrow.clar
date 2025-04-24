@@ -257,3 +257,63 @@
     (ok true)
   )
 )
+
+;; Refund an NFT to seller if escrow has expired
+(define-public (refund-nft 
+  (nft-contract <nft-trait>)
+  (nft-id uint)
+)
+  (let 
+    ((escrow-details (unwrap! 
+      (map-get? escrow-transactions 
+        {
+          nft-contract: (contract-of nft-contract), 
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    )))
+    
+    ;; Verify NFT Contract
+    (asserts! (is-valid-nft-contract (contract-of nft-contract)) (err ERR-INAVALID-ADDRESS))
+
+    (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
+    
+    (asserts! 
+      (> block-height (get expiry-block escrow-details)) 
+      (err ERR-ESCROW-EXPIRED)
+    )
+    
+    ;; Transfer NFT Back to Seller
+    (try! 
+      (as-contract 
+        (contract-call? nft-contract transfer 
+          nft-id 
+          (as-contract tx-sender) 
+          (get seller escrow-details)
+        )
+      )
+    )
+    
+    ;; Update Escrow Status
+    (map-set escrow-transactions 
+      {
+        nft-contract: (contract-of nft-contract), 
+        nft-id: nft-id
+      }
+      (merge escrow-details { status: "refunded" })
+    )
+    
+    ;; Emit Refund Event
+    (print {
+      notification: "nft-escrow-refunded",
+      payload: {
+        nft-contract: (contract-of nft-contract),
+        nft-id: nft-id,
+        seller: (get seller escrow-details)
+      }
+    })
+    
+    (ok true)
+  )
+)
