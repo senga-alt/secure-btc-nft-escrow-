@@ -317,3 +317,41 @@
     (ok true)
   )
 )
+
+;; Utility Functions
+
+;; Get the current status of an escrow transaction
+(define-read-only (get-escrow-status 
+  (nft-contract principal)
+  (nft-id uint)
+)
+  (map-get? escrow-transactions 
+    {
+      nft-contract: nft-contract, 
+      nft-id: nft-id
+    }
+  )
+)
+
+;; Get the receipt status of an NFT in escrow
+(define-read-only (get-nft-receipt-status 
+  (nft-contract principal)
+  (nft-id uint)
+)
+  (map-get? nft-receipts 
+    {
+      nft-contract: nft-contract,
+      nft-id: nft-id
+    }
+  )
+)
+
+;; Check if a principal is a valid NFT contract
+(define-read-only (is-valid-nft-contract (contract principal))
+  (match (principal-destruct? contract)
+    ok-result 
+      (is-some (get name ok-result))
+    err-result 
+      false
+  )
+)
