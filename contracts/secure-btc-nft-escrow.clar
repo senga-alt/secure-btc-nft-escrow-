@@ -106,3 +106,73 @@
     (ok true)
   )
 )
+
+;; Create a new NFT escrow transaction
+(define-public (create-nft-escrow 
+  (nft-contract <nft-trait>)
+  (nft-id uint)
+  (buyer principal)
+  (sale-price uint)
+)
+  (if (is-standard buyer)
+    (begin
+      ;; Validate buyer address
+      (asserts! (is-standard buyer) (err ERR-INAVALID-ADDRESS))
+      ;; Validate NFT Contract
+      (asserts! (is-valid-nft-contract (contract-of nft-contract)) (err ERR-INAVALID-ADDRESS))
+      ;; Validate sale price
+      (asserts! (> sale-price u0) (err ERR-INVALID-PRICE))
+      ;; Validate seller ownership and transfer capability
+      (asserts! 
+        (is-ok (contract-call? nft-contract transfer 
+          nft-id 
+          tx-sender 
+          (as-contract tx-sender)
+        )) 
+        (err ERR-INVALID-TRANSFER)
+      )
+      
+      ;; Initialize NFT Receipt Tracking
+      (map-set nft-receipts 
+        {
+          nft-contract: (contract-of nft-contract),
+          nft-id: nft-id
+        }
+        {
+          received: false,
+          received-at-block: u0
+        }
+      )
+      
+      ;; Store Escrow Details
+      (map-set escrow-transactions 
+        {
+          nft-contract: (contract-of nft-contract), 
+          nft-id: nft-id
+        }
+        {
+          seller: tx-sender,
+          buyer: buyer,
+          price: sale-price,
+          status: "pending",
+          expiry-block: (+ block-height ESCROW-TIMEOUT)
+        }
+      )
+      
+      ;; Emit Event for Chainhook
+      (print {
+        notification: "nft-escrow-created",
+        payload: {
+          nft-contract: (contract-of nft-contract),
+          nft-id: nft-id,
+          seller: tx-sender,
+          buyer: buyer,
+          price: sale-price
+        }
+      })
+      
+      (ok true)
+    )
+    (err ERR-INAVALID-ADDRESS)
+  )
+)
