@@ -89,7 +89,7 @@
       }
       {
         received: true,
-        received-at-block: block-height
+        received-at-block: stacks-block-height
       }
     )
 
@@ -155,7 +155,7 @@
           buyer: buyer,
           price: sale-price,
           status: "pending",
-          expiry-block: (+ block-height ESCROW-TIMEOUT)
+          expiry-block: (+ stacks-block-height ESCROW-TIMEOUT)
         }
       )
       
@@ -218,7 +218,7 @@
     )
     
     (asserts! 
-      (<= block-height (get expiry-block escrow-details)) 
+      (<= stacks-block-height (get expiry-block escrow-details)) 
       (err ERR-ESCROW-EXPIRED)
     )
     
@@ -280,7 +280,7 @@
     (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
     
     (asserts! 
-      (> block-height (get expiry-block escrow-details)) 
+      (> stacks-block-height (get expiry-block escrow-details)) 
       (err ERR-ESCROW-EXPIRED)
     )
     
