@@ -59,3 +59,50 @@
     expiry-block: uint
   }
 )
+
+;; Core Functions
+
+;; Confirm receipt of an NFT in the escrow system
+(define-public (confirm-nft-receipt 
+  (nft-contract principal)
+  (nft-id uint)
+)
+  (begin
+    ;; Only seller can confirm receipt
+    (asserts! (is-eq tx-sender (get seller (unwrap! 
+      (map-get? escrow-transactions 
+        {
+          nft-contract: nft-contract, 
+          nft-id: nft-id
+        }
+      ) 
+      (err ERR-INVALID-TRANSFER)
+    ))) (err ERR-NOT-AUTHORIZED))
+    (asserts! (is-valid-nft-contract nft-contract) (err ERR-INAVALID-ADDRESS))
+    (asserts! (> nft-id u0) (err ERR-INVALID-TRANSFER))
+
+    ;; Mark NFT as received
+    (map-set nft-receipts 
+      {
+        nft-contract: nft-contract,
+        nft-id: nft-id
+      }
+      {
+        received: true,
+        received-at-block: block-height
+      }
+    )
+
+    ;; Emit Receipt Confirmation Event
+    (print {
+      notification: "nft-receipt-confirmed",
+      payload: {
+        nft-contract: nft-contract,
+        nft-id: nft-id,
+        seller: tx-sender
+      }
+    })
+
+    (ok true)
+  )
+)
